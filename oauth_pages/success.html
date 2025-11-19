@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Authentication Success</title>
+	<style>
+		* {
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+		}
+
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+			text-align: center;
+			padding: 50px 20px;
+			background: #0a0a0a;
+			color: #fff;
+			min-height: 100vh;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.container {
+			background: linear-gradient(135deg, #1e3a2f 0%, #2d1e3a 100%);
+			padding: 40px;
+			border-radius: 16px;
+			max-width: 500px;
+			width: 100%;
+			box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+		}
+
+		h1 {
+			color: #7ed56f;
+			margin: 0 0 20px 0;
+			font-size: 28px;
+		}
+
+		.spinner {
+			border: 4px solid #333;
+			border-top: 4px solid #7ed56f;
+			border-radius: 50%;
+			width: 40px;
+			height: 40px;
+			animation: spin 1s linear infinite;
+			margin: 20px auto;
+		}
+
+		@keyframes spin {
+			0% { transform: rotate(0deg); }
+			100% { transform: rotate(360deg); }
+		}
+
+		p {
+			color: #aaa;
+			font-size: 16px;
+			line-height: 1.5;
+		}
+
+		.status {
+			margin-top: 20px;
+			padding: 12px;
+			background: rgba(0, 0, 0, 0.2);
+			border-radius: 8px;
+			font-size: 14px;
+		}
+
+		.success-icon {
+			font-size: 48px;
+			margin-bottom: 10px;
+		}
+	</style>
+</head>
+<body>
+	<div class="container">
+		<div class="success-icon">✅</div>
+		<h1>Authentication Successful</h1>
+		<div class="spinner"></div>
+		<p id="status">Sending credentials to game...</p>
+		<div class="status" id="details" style="display: none;"></div>
+	</div>
+
+	<script>
+		const statusEl = document.getElementById('status');
+		const detailsEl = document.getElementById('details');
+		const spinner = document.querySelector('.spinner');
+
+		// Extract tokens from URL hash fragment
+		const hash = window.location.hash.substring(1);
+		const params = new URLSearchParams(hash);
+
+		const tokens = {
+			access_token: params.get('access_token'),
+			refresh_token: params.get('refresh_token'),
+			expires_in: params.get('expires_in'),
+			token_type: params.get('token_type')
+		};
+
+		// Show token details (optional - for debugging)
+		if (tokens.access_token) {
+			detailsEl.innerHTML = `
+				<strong>Token Type:</strong> ${tokens.token_type || 'bearer'}<br>
+				<strong>Expires In:</strong> ${tokens.expires_in || 'N/A'} seconds
+			`;
+			detailsEl.style.display = 'block';
+
+			// Send tokens back to the game
+			const callbackPort = new URLSearchParams(window.location.search).get('port') || '3000';
+			fetch(`http://localhost:${callbackPort}/tokens?` + new URLSearchParams(tokens))
+				.then(() => {
+					statusEl.textContent = 'Success! You can close this window.';
+					spinner.style.display = 'none';
+					// Auto-close after 2 seconds
+					setTimeout(() => {
+						window.close();
+					}, 2000);
+				})
+				.catch(err => {
+					// Fetch might fail due to CORS, but the request was sent
+					statusEl.textContent = 'Credentials sent to game. You can close this window.';
+					spinner.style.display = 'none';
+					console.log('Sent tokens to game (fetch error expected):', err);
+				});
+		} else {
+			statusEl.textContent = 'Error: No tokens received in URL';
+			spinner.style.display = 'none';
+			detailsEl.textContent = 'Please try authenticating again.';
+			detailsEl.style.display = 'block';
+		}
+	</script>
+</body>
+</html>

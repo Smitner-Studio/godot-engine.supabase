@@ -16,6 +16,7 @@ signal signed_up(signed_user: SupabaseUser)
 signal signed_up_phone(signed_user: SupabaseUser)
 signal signed_in(signed_user: SupabaseUser)
 signal signed_in_otp(signed_user: SupabaseUser)
+signal signed_in_with_provider(signed_user: SupabaseUser)
 signal otp_verified()
 signal signed_in_anonyous()
 signal signed_out()
@@ -51,11 +52,12 @@ var _auth : String = ""
 var _expires_in : float = 0
 
 var client : SupabaseUser
+var _oauth_provider: SupabaseOAuthProvider = null
 
 func _init(conf : Dictionary, head : PackedStringArray) -> void:
 	_config = conf
 	_header = head
-	name = "Authentication"  
+	name = "Authentication"
 
 func __get_session_header() -> PackedStringArray :
 	return PackedStringArray([_bearer[0] % ( _auth if not _auth.is_empty() else _config.supabaseKey )])
@@ -71,7 +73,7 @@ func sign_up(email : String, password : String) -> AuthTask:
 	var payload : Dictionary = {"email":email, "password":password}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.SIGNUP,
-		_config.supabaseUrl + _signup_endpoint, 
+		_config.supabaseUrl + _signup_endpoint,
 		_header,
 		JSON.stringify(payload)
 	)
@@ -86,7 +88,7 @@ func sign_up_phone(phone : String, password : String) -> AuthTask:
 	var payload : Dictionary = {"phone":phone, "password":password}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.SIGNUPPHONEPASSWORD,
-		_config.supabaseUrl + _signup_endpoint, 
+		_config.supabaseUrl + _signup_endpoint,
 		_header,
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -99,7 +101,7 @@ func sign_in(email : String, password : String = "") -> AuthTask:
 	var payload : Dictionary = {"email":email, "password":password}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.SIGNIN,
-		_config.supabaseUrl + _signin_endpoint, 
+		_config.supabaseUrl + _signin_endpoint,
 		_header,
 		JSON.stringify(payload)
 	)
@@ -114,7 +116,7 @@ func sign_in_phone(phone : String, password : String = "") -> AuthTask:
 	var payload : Dictionary = {"phone":phone, "password":password}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.SIGNIN,
-		_config.supabaseUrl + _signin_endpoint, 
+		_config.supabaseUrl + _signin_endpoint,
 		_header,
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -128,7 +130,7 @@ func sign_in_otp(phone : String) -> AuthTask:
 	var payload : Dictionary = {"phone":phone}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.SIGNINOTP,
-		_config.supabaseUrl + _signin_otp_endpoint, 
+		_config.supabaseUrl + _signin_otp_endpoint,
 		_header,
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -141,7 +143,7 @@ func verify_otp(phone : String, token : String) -> AuthTask:
 	var payload : Dictionary = {phone = phone, token = token, type = "sms"}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.VERIFYOTP,
-		_config.supabaseUrl + _verify_otp_endpoint, 
+		_config.supabaseUrl + _verify_otp_endpoint,
 		_header,
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -153,7 +155,7 @@ func verify_otp_email(email : String, token : String, type : String) -> AuthTask
 	var payload : Dictionary = {email = email, token = token, type = type}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.VERIFYOTP,
-		_config.supabaseUrl + _verify_otp_endpoint, 
+		_config.supabaseUrl + _verify_otp_endpoint,
 		_header,
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -168,20 +170,71 @@ func sign_in_anonymous() -> AuthTask:
 	return auth_task
 
 
-# [     CURRENTLY UNSUPPORTED       ]
-# Sign in with a Provider
-# @provider = Providers.PROVIDER
-func sign_in_with_provider(provider : String, grab_from_browser : bool = true, port : int = 3000) -> void:
-	OS.shell_open(_config.supabaseUrl + _provider_endpoint + "?provider="+provider)
-	# ! to be implemented
-	pass
+# Sign in with an OAuth Provider
+# @provider = Providers.PROVIDER (e.g., Providers.DISCORD, Providers.GOOGLE)
+# @grab_from_browser = deprecated, kept for compatibility
+# @port = deprecated, kept for compatibility (always uses 3000)
+func sign_in_with_provider(provider: String, grab_from_browser: bool = true, port: int = 3000) -> void:
+	print("[SupabaseAuth] sign_in_with_provider called with provider: %s" % provider)
+	print("[SupabaseAuth] Supabase URL: %s" % _config.supabaseUrl)
+
+	if _oauth_provider == null:
+		_oauth_provider = SupabaseOAuthProvider.new(_config.supabaseUrl)
+		add_child(_oauth_provider)
+		_oauth_provider.auth_success.connect(_on_oauth_success)
+		_oauth_provider.auth_error.connect(_on_oauth_error)
+		print("[SupabaseAuth] OAuth provider initialized")
+
+	_oauth_provider.authenticate(provider)
+
+
+func _on_oauth_success(access_token: String, refresh_token: String, expires_in: int) -> void:
+	_auth = access_token
+	_expires_in = expires_in
+
+	# Decode JWT to get user info
+	var jwt_parts: PackedStringArray = access_token.split(".")
+	var user_info: Dictionary = {}
+	if jwt_parts.size() >= 2:
+		var payload: String = jwt_parts[1]
+		# Add padding if needed for base64 decode
+		while payload.length() % 4 != 0:
+			payload += "="
+		var decoded: PackedByteArray = Marshalls.base64_to_raw(payload)
+		var json_result = JSON.parse_string(decoded.get_string_from_utf8())
+		if json_result:
+			user_info = json_result
+
+	# Create SupabaseUser from tokens and JWT data
+	var user_data: Dictionary = {
+		"access_token": access_token,
+		"refresh_token": refresh_token,
+		"expires_in": expires_in,
+		"user": {
+			"id": user_info.get("sub", ""),
+			"email": user_info.get("email", ""),
+			"user_metadata": user_info.get("user_metadata", {}),
+			"app_metadata": user_info.get("app_metadata", {})
+		}
+	}
+	client = SupabaseUser.new(user_data)
+
+	signed_in_with_provider.emit(client)
+	refresh_token()
+
+
+func _on_oauth_error(error_code: String, error_description: String) -> void:
+	var auth_error := SupabaseAuthError.new()
+	auth_error.code = error_code
+	auth_error.message = error_description
+	error.emit(auth_error)
 
 
 # If a user is logged in, this will log it out
 func sign_out() -> AuthTask:
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.LOGOUT,
-		_config.supabaseUrl + _logout_endpoint, 
+		_config.supabaseUrl + _logout_endpoint,
 		_header + __get_session_header())
 	_process_task(auth_task)
 	return auth_task
@@ -194,7 +247,7 @@ func send_magic_link(email : String)  -> AuthTask:
 	var payload : Dictionary = {"email":email}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.MAGICLINK,
-		_config.supabaseUrl + _magiclink_endpoint, 
+		_config.supabaseUrl + _magiclink_endpoint,
 		_header,
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -205,7 +258,7 @@ func send_magic_link(email : String)  -> AuthTask:
 func user(user_access_token : String = _auth) -> AuthTask:
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.USER,
-		_config.supabaseUrl + _user_endpoint, 
+		_config.supabaseUrl + _user_endpoint,
 		_header + __get_session_header())
 	_process_task(auth_task)
 	return auth_task
@@ -216,7 +269,7 @@ func update(email : String, password : String = "", data : Dictionary = {}) -> A
 	var payload : Dictionary = {"email":email, "password":password, "data" : data}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.UPDATE,
-		_config.supabaseUrl + _user_endpoint, 
+		_config.supabaseUrl + _user_endpoint,
 		_header + __get_session_header(),
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -227,7 +280,7 @@ func update_email(email : String) -> AuthTask:
 	var payload : Dictionary = {"email":email}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.UPDATE,
-		_config.supabaseUrl + _user_endpoint, 
+		_config.supabaseUrl + _user_endpoint,
 		_header + __get_session_header(),
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -238,7 +291,7 @@ func reset_password_for_email(email : String) -> AuthTask:
 	var payload : Dictionary = {"email":email}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.RECOVER,
-		_config.supabaseUrl + _reset_password_endpoint, 
+		_config.supabaseUrl + _reset_password_endpoint,
 		_header,
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -250,7 +303,7 @@ func invite_user_by_email(email : String) -> AuthTask:
 	var payload : Dictionary = {"email":email}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.INVITE,
-		_config.supabaseUrl + _invite_endpoint, 
+		_config.supabaseUrl + _invite_endpoint,
 		_header + __get_session_header(),
 		JSON.stringify(payload))
 	_process_task(auth_task)
@@ -264,11 +317,11 @@ func refresh_token(refresh_token : String = client.refresh_token, expires_in : f
 	var payload : Dictionary = {refresh_token = refresh_token}
 	var auth_task : AuthTask = AuthTask.new()._setup(
 		AuthTask.Task.REFRESH,
-		_config.supabaseUrl + _refresh_token_endpoint, 
+		_config.supabaseUrl + _refresh_token_endpoint,
 		_header + __get_session_header(),
 		JSON.stringify(payload))
 	_process_task(auth_task)
-	return auth_task 
+	return auth_task
 
 
 
@@ -313,7 +366,7 @@ func _on_task_completed(task : AuthTask) -> void:
 					signed_in.emit(client)
 				AuthTask.Task.SIGNINOTP:
 					signed_in_otp.emit(client)
-				AuthTask.Task.UPDATE: 
+				AuthTask.Task.UPDATE:
 					user_updated.emit(client)
 				AuthTask.Task.REFRESH:
 					token_refreshed.emit(client)
@@ -322,7 +375,7 @@ func _on_task_completed(task : AuthTask) -> void:
 				AuthTask.Task.SIGNINANONYM:
 					signed_in_anonyous.emit()
 			refresh_token()
-		else: 
+		else:
 			if task.data.is_empty() or task.data == null:
 				match task._code:
 					AuthTask.Task.MAGICLINK:
